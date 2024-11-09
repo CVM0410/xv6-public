@@ -6,6 +6,7 @@
 #include "x86.h"
 #include "proc.h"
 #include "spinlock.h"
+#include "mylock.h"
 
 struct {
   struct spinlock lock;
@@ -111,6 +112,7 @@ found:
   p->context = (struct context*)sp;
   memset(p->context, 0, sizeof *p->context);
   p->context->eip = (uint)forkret;
+  p->nice = 3;
 
   return p;
 }
@@ -322,37 +324,43 @@ wait(void)
 void
 scheduler(void)
 {
-  struct proc *p;
-  struct cpu *c = mycpu();
-  c->proc = 0;
-  
-  for(;;){
-    // Enable interrupts on this processor.
-    sti();
-
-    // Loop over process table looking for process to run.
-    acquire(&ptable.lock);
-    for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
-      if(p->state != RUNNABLE)
-        continue;
-
-      // Switch to chosen process.  It is the process's job
-      // to release ptable.lock and then reacquire it
-      // before jumping back to us.
-      c->proc = p;
-      switchuvm(p);
-      p->state = RUNNING;
-
-      swtch(&(c->scheduler), p->context);
-      switchkvm();
-
-      // Process is done running for now.
-      // It should have changed its p->state before coming back.
-      c->proc = 0;
+    struct proc *p;
+    struct cpu *c = mycpu();
+    c->proc = 0;
+    
+    for(;;) {
+        // Enable interrupts on this processor.
+        sti();
+        
+        acquire(&ptable.lock);
+        
+        // Try each priority level, starting from highest (nice=1)
+        for(int nice_level = 1; nice_level <= 5; nice_level++) {
+            // Look for runnable process at current priority level
+            for(p = ptable.proc; p < &ptable.proc[NPROC]; p++) {
+                if(p->state != RUNNABLE || p->nice != nice_level)
+                    continue;
+                
+                // Switch to chosen process
+                c->proc = p;
+                switchuvm(p);
+                p->state = RUNNING;
+                
+                swtch(&(c->scheduler), p->context);
+                switchkvm();
+                
+                // Process is done running for now
+                c->proc = 0;
+                
+                // Found and ran a process at this priority, 
+                // start over from highest priority
+                goto schedule_done;
+            }
+        }
+        
+schedule_done:
+        release(&ptable.lock);
     }
-    release(&ptable.lock);
-
-  }
 }
 
 // Enter scheduler.  Must hold only ptable.lock
@@ -531,4 +539,105 @@ procdump(void)
     }
     cprintf("\n");
   }
+}
+
+int
+chpr(int pid, int value)
+{
+    struct proc *p;
+    int oldnice = -1;
+    
+    acquire(&ptable.lock);
+    
+    // Find process with given pid
+    for(p = ptable.proc; p < &ptable.proc[NPROC]; p++) {
+        if(p->pid == pid && p->state != UNUSED) {
+            oldnice = p->nice;
+            p->nice = value;
+            break;
+        }
+    }
+    
+    release(&ptable.lock);
+    return oldnice;
+}
+
+struct lock_data {
+    int id;
+    int held;
+    struct proc *owner;
+    int orig_priority;
+} locks[MAX_LOCKS];
+
+struct spinlock lock_table_lock;
+
+// Initialize locks - call this in main() or init()
+void
+init_locks(void)
+{
+    initlock(&lock_table_lock, "locktable");
+    for(int i = 0; i < MAX_LOCKS; i++) {
+        locks[i].id = i;
+        locks[i].held = 0;
+        locks[i].owner = 0;
+        locks[i].orig_priority = 0;
+    }
+}
+
+// Add lock implementation for extra credit
+int
+lock_impl(int id)
+{
+    if(id < 0 || id >= MAX_LOCKS)
+        return -1;
+        
+    acquire(&lock_table_lock);
+    struct proc *p = myproc();
+    
+    while(locks[id].held) {
+        // Priority inheritance
+        if(locks[id].owner && p->nice < locks[id].owner->nice) {
+            locks[id].orig_priority = locks[id].owner->nice;
+            locks[id].owner->nice = p->nice;
+            cprintf("Priority inherited: Process %d nice changed from %d to %d\n",
+                   locks[id].owner->pid, locks[id].orig_priority, p->nice);
+        }
+        sleep(&locks[id], &lock_table_lock);
+    }
+    
+    locks[id].held = 1;
+    locks[id].owner = p;
+    
+    release(&lock_table_lock);
+    return 0;
+}
+
+int
+release_impl(int id)
+{
+    if(id < 0 || id >= MAX_LOCKS)
+        return -1;
+        
+    acquire(&lock_table_lock);
+    struct proc *p = myproc();
+    
+    if(!locks[id].held || locks[id].owner != p) {
+        release(&lock_table_lock);
+        return -1;
+    }
+    
+    // Restore original priority if it was inherited
+    if(locks[id].orig_priority) {
+        p->nice = locks[id].orig_priority;
+        cprintf("Priority restored: Process %d nice reset to %d\n",
+               p->pid, p->nice);
+        locks[id].orig_priority = 0;
+    }
+    
+    locks[id].held = 0;
+    locks[id].owner = 0;
+    wakeup(&locks[id]);
+    
+    release(&lock_table_lock);
+    return 0;
 }

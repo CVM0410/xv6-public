@@ -7,6 +7,8 @@
 #include "mmu.h"
 #include "proc.h"
 
+int chpr(int pid, int value);
+
 int
 sys_fork(void)
 {
@@ -88,4 +90,38 @@ sys_uptime(void)
   xticks = ticks;
   release(&tickslock);
   return xticks;
+}
+
+int
+sys_nice(void)
+{
+    int pid, value;
+    if(argint(0, &pid) < 0 || argint(1, &value) < 0) {
+        return -1;
+    }
+    
+    // Validate nice value (1-5, where 1 is highest priority)
+    if(value < 1 || value > 5) {
+        return -1;
+    }
+    
+    return chpr(pid, value);  // Keep your existing function name
+}
+
+int
+sys_lock(void)
+{
+    int id;
+    if(argint(0, &id) < 0)
+        return -1;
+    return lock_impl(id);
+}
+
+int
+sys_release(void)
+{
+    int id;
+    if(argint(0, &id) < 0)
+        return -1;
+    return release_impl(id);
 }
