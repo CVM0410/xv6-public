@@ -89,6 +89,7 @@ allocproc(void)
 found:
   p->state = EMBRYO;
   p->pid = nextpid++;
+  p->nice = 3;
 
   release(&ptable.lock);
 
@@ -112,7 +113,6 @@ found:
   p->context = (struct context*)sp;
   memset(p->context, 0, sizeof *p->context);
   p->context->eip = (uint)forkret;
-  p->nice = 3;
 
   return p;
 }
@@ -566,19 +566,33 @@ chpr(int pid, int value)
     struct proc *p;
     int oldnice = -1;
     
+    // Check for valid PID
+    if(pid <= 0) {
+        return -1;  // Return -1 for invalid PID without additional values
+    }
+
     acquire(&ptable.lock);
     
-    // Find process with given pid
+    // Case 1: Current process
+    if(pid == myproc()->pid) {
+        oldnice = myproc()->nice;
+        myproc()->nice = value;
+        release(&ptable.lock);
+        return oldnice;
+    }
+    
+    // Case 2: Other process
     for(p = ptable.proc; p < &ptable.proc[NPROC]; p++) {
-        if(p->pid == pid && p->state != UNUSED) {
+        if(p->pid == pid) {  // No state check, allowing change to any process
             oldnice = p->nice;
             p->nice = value;
-            break;
+            release(&ptable.lock);
+            return oldnice;
         }
     }
     
     release(&ptable.lock);
-    return oldnice;
+    return -1;  // Return -1 if PID is not found
 }
 
 struct lock_data {
