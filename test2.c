@@ -1,6 +1,24 @@
-// test2.c - Modified version for clearer output
 #include "types.h"
 #include "user.h"
+#include "stat.h"
+
+#define WORK_ITERATIONS 20
+#define NUM_PROCESSES 4
+#define MAX_PRIMES 20
+#define COMPUTE_ITERATIONS 100000000
+
+struct process_metrics {
+    int pid;
+    int priority;
+    int start_tick;
+    int end_tick;
+    int total_runtime;
+    int primes[MAX_PRIMES];
+    int prime_found_ticks[MAX_PRIMES];
+    int intervals[MAX_PRIMES];
+    int min_interval;
+    int max_interval;
+};
 
 int is_prime(int n) {
     if (n <= 1) return 0;
@@ -10,45 +28,198 @@ int is_prime(int n) {
     return 1;
 }
 
-int main() {
-    printf(1, "\nMulti-Process Priority Test (4 Processes)\n");
-    printf(1, "=======================================\n\n");
+int find_nth_prime(int n) {
+    int count = 0;
+    int num = 2;
+    while (count < n) {
+        if (is_prime(num)) {
+            count++;
+        }
+        if (count < n) {
+            num++;
+        }
+    }
+    return num;
+}
+
+void heavy_compute() {
+    volatile int result = 0;
+    for(int j = 0; j < COMPUTE_ITERATIONS; j++) {
+        result += j * j;
+        if(j % 1000000 == 0) {
+            sleep(1);
+        }
+    }
+}
+
+void print_process_results(struct process_metrics *m) {
+    printf(1, "\nPID = %d (Nice = %d) Results:\n", m->pid, m->priority);
+    printf(1, "----------------------------------------\n");
     
-    // Create 4 children with different priorities
-    for(int i = 1; i <= 4; i++) {
+    printf(1, "Operation Timeline:\n");
+    int total_interval = 0;
+    m->min_interval = 999999;
+    m->max_interval = 0;
+    
+    for(int i = 0; i < WORK_ITERATIONS; i++) {
+        printf(1, "Prime %d: Found at T+%d (Interval: %d ticks)\n", 
+               m->primes[i], 
+               m->prime_found_ticks[i] - m->start_tick,
+               m->intervals[i]);
+               
+        total_interval += m->intervals[i];
+        if(m->intervals[i] > m->max_interval) m->max_interval = m->intervals[i];
+        if(m->intervals[i] < m->min_interval) m->min_interval = m->intervals[i];
+    }
+    
+    printf(1, "\nInterval Analysis:\n");
+    printf(1, "Total Runtime: %d ticks\n", m->total_runtime);
+    printf(1, "Average Interval: %d ticks\n", total_interval / WORK_ITERATIONS);
+    printf(1, "Minimum Interval: %d ticks\n", m->min_interval);
+    printf(1, "Maximum Interval: %d ticks\n", m->max_interval);
+    printf(1, "Variance in Intervals: %d ticks\n\n", 
+           m->max_interval - m->min_interval);
+}
+
+void print_comparative_analysis(struct process_metrics metrics[], int n) {
+    printf(1, "\nComparative Analysis:\n");
+    printf(1, "----------------------------------------\n");
+    
+    for(int i = 0; i < NUM_PROCESSES; i++) {
+        int total_interval = 0;
+        for(int j = 0; j < WORK_ITERATIONS; j++) {
+            total_interval += metrics[i].intervals[j];
+        }
+        
+        printf(1, "Nice = %d (PID = %d):\n", 
+               metrics[i].priority, metrics[i].pid);
+        printf(1, "  Total Runtime: %d ticks\n", metrics[i].total_runtime);
+        printf(1, "  Average Interval: %d ticks\n", 
+               total_interval / WORK_ITERATIONS);
+        if(i > 0) {
+            int slowdown = ((metrics[i].total_runtime - metrics[0].total_runtime) * 100) 
+                          / metrics[0].total_runtime;
+            printf(1, "  Slowdown: %d%%\n", slowdown);
+        } else {
+            printf(1, "  Baseline Performance\n");
+        }
+        printf(1, "\n");
+    }
+
+    printf(1, "Priority Impact Analysis:\n");
+    printf(1, "----------------------------------------\n");
+    for(int i = 1; i < n; i++) {
+        int runtime_diff = metrics[i].total_runtime - metrics[0].total_runtime;
+        int interval_increase = 
+            ((metrics[i].total_runtime / WORK_ITERATIONS) * 100) / 
+            (metrics[0].total_runtime / WORK_ITERATIONS) - 100;
+        
+        printf(1, "Priority(Nice) %d vs Priority(Nice) 1:\n", i + 1);
+        printf(1, "  Runtime Difference: +%d ticks (%d%%)\n", 
+               runtime_diff,
+               (runtime_diff * 100) / metrics[0].total_runtime);
+        printf(1, "  Interval Increase: %d%%\n\n", 
+               interval_increase);
+    }
+
+    printf(1, "Performance Summary:\n");
+    printf(1, "----------------------------------------\n");
+    printf(1, "Priority(Nice) 1 (Baseline):\n");
+    printf(1, "  - Fastest completion time: %d ticks\n", metrics[0].total_runtime);
+    printf(1, "  - Most consistent intervals (variance: %d ticks)\n", 
+           metrics[0].max_interval - metrics[0].min_interval);
+    printf(1, "Lower priorities show:\n");
+    printf(1, "  - Increased runtime: up to %d%%\n", 
+           ((metrics[NUM_PROCESSES-1].total_runtime - metrics[0].total_runtime) * 100) 
+           / metrics[0].total_runtime);
+    printf(1, "  - Higher interval variance: up to %d ticks\n",
+           metrics[NUM_PROCESSES-1].max_interval - metrics[NUM_PROCESSES-1].min_interval);
+    printf(1, "  - Progressively longer intervals\n");
+}
+
+int main() {
+    struct process_metrics metrics[NUM_PROCESSES];
+    int pipes[NUM_PROCESSES][2];
+    
+    printf(1, "\nPriority Scheduling Test (Heavy Computation)\n");
+    printf(1, "============================================\n\n");
+
+    for(int i = 0; i < NUM_PROCESSES; i++) {
+        if(pipe(pipes[i]) < 0) {
+            printf(1, "Pipe creation failed\n");
+            exit();
+        }
+    }
+
+    int base_time = uptime() + 50;
+    
+    for(int i = 0; i < NUM_PROCESSES; i++) {
         int pid = fork();
+        
         if(pid == 0) {
-            sleep(100 * i);  // Stagger the starts
-            nice(getpid(), i);  // Priorities 1,2,3,4
-            printf(1, "\nProcess %d (PID=%d, Nice=%d) starting...\n", 
-                   i, getpid(), i);
+            struct process_metrics m;
+            int priority = i + 1;
             
-            int count = 0;
-            for(int n = 1; n < 100000 && count < 20; n++) {
-                if(is_prime(n)) {
-                    printf(1, "Process %d (PID=%d, Nice=%d): prime=%d\n", 
-                           i, getpid(), i, n);
-                    count++;
-                    
-                    // Lighter computation
-                    int result = 0;
-                    for(int j = 0; j < 1000; j++) {
-                        result += j * j;
-                    }
+            for(int j = 0; j < NUM_PROCESSES; j++) {
+                if(j != i) {
+                    close(pipes[j][0]);
+                    close(pipes[j][1]);
                 }
+                if(j == i) close(pipes[j][0]);
             }
-            printf(1, "\nProcess %d (PID=%d, Nice=%d) finished\n", 
-                   i, getpid(), i);
+            
+            nice(getpid(), priority);
+            m.pid = getpid();
+            m.priority = priority;
+            m.min_interval = 999999;
+            m.max_interval = 0;
+            
+            while(uptime() < base_time);
+            
+            m.start_tick = uptime();
+            int last_tick = m.start_tick;
+            
+            for(int task = 0; task < WORK_ITERATIONS; task++) {
+                m.primes[task] = find_nth_prime(task + 1);
+                
+                heavy_compute();
+                
+                int current_tick = uptime();
+                m.prime_found_ticks[task] = current_tick;
+                m.intervals[task] = current_tick - last_tick;
+                
+                if(m.intervals[task] > m.max_interval) m.max_interval = m.intervals[task];
+                if(m.intervals[task] < m.min_interval) m.min_interval = m.intervals[task];
+                
+                last_tick = current_tick;
+            }
+            
+            m.end_tick = uptime();
+            m.total_runtime = m.end_tick - m.start_tick;
+            
+            write(pipes[i][1], &m, sizeof(m));
+            close(pipes[i][1]);
             exit();
         }
     }
     
-    // Parent waits for all children
-    for(int i = 0; i < 4; i++) {
-        wait();
+    printf(1, "All processes starting simultaneously...\n");
+    
+    for(int i = 0; i < NUM_PROCESSES; i++) {
+        close(pipes[i][1]);
     }
     
-    printf(1, "\n=======================================\n");
-    printf(1, "Test Complete\n\n");
+    for(int i = 0; i < NUM_PROCESSES; i++) {
+        read(pipes[i][0], &metrics[i], sizeof(struct process_metrics));
+        close(pipes[i][0]);
+        wait();
+    }
+
+    for(int i = 0; i < NUM_PROCESSES; i++) {
+        print_process_results(&metrics[i]);
+    }
+    
+    print_comparative_analysis(metrics, NUM_PROCESSES);
+    
     exit();
 }

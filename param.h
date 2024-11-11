@@ -12,4 +12,5 @@
 #define NBUF         (MAXOPBLOCKS*3)  // size of disk block cache
 #define FSSIZE       1000  // size of file system in blocks
 #define MAX_LOCKS      8   // maximum number of locks
+#define QUANTUM 10      // Time quantum in ticks
 

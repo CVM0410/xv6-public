@@ -321,40 +321,59 @@ wait(void)
 //  - swtch to start running that process
 //  - eventually that process transfers control
 //      via swtch back to the scheduler.
-void
-scheduler(void)
-{
+void scheduler(void) {
     struct proc *p;
     struct cpu *c = mycpu();
     c->proc = 0;
+    int current_priority = 1;
     
     for(;;) {
-        // Enable interrupts on this processor.
         sti();
-        
         acquire(&ptable.lock);
         
-        // Try each priority level, starting from highest (nice=1)
-        for(int nice_level = 1; nice_level <= 5; nice_level++) {
-            // Look for runnable process at current priority level
+        int found = 0;
+        
+        // First try current priority level
+        for(p = ptable.proc; p < &ptable.proc[NPROC]; p++) {
+            if(p->state != RUNNABLE || p->nice != current_priority)
+                continue;
+            
+            found = 1;
+            c->proc = p;
+            switchuvm(p);
+            p->state = RUNNING;
+            
+            // Set start time for time quantum
+            p->ticks = ticks;
+            
+            swtch(&(c->scheduler), p->context);
+            switchkvm();
+            
+            c->proc = 0;
+            
+            // If process used its time quantum, move to next priority
+            if(ticks - p->ticks >= QUANTUM) {
+                current_priority = (current_priority % 5) + 1;
+            }
+            goto schedule_done;
+        }
+        
+        // If nothing found at current priority, try next priority
+        if(!found) {
+            current_priority = (current_priority % 5) + 1;
+            
+            // Check if any runnable processes exist
+            int has_runnable = 0;
             for(p = ptable.proc; p < &ptable.proc[NPROC]; p++) {
-                if(p->state != RUNNABLE || p->nice != nice_level)
-                    continue;
-                
-                // Switch to chosen process
-                c->proc = p;
-                switchuvm(p);
-                p->state = RUNNING;
-                
-                swtch(&(c->scheduler), p->context);
-                switchkvm();
-                
-                // Process is done running for now
-                c->proc = 0;
-                
-                // Found and ran a process at this priority, 
-                // start over from highest priority
-                goto schedule_done;
+                if(p->state == RUNNABLE) {
+                    has_runnable = 1;
+                    break;
+                }
+            }
+            
+            // If no runnable processes, reset to highest priority
+            if(!has_runnable) {
+                current_priority = 1;
             }
         }
         
