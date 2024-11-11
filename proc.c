@@ -604,7 +604,7 @@ struct lock_data {
 
 struct spinlock lock_table_lock;
 
-// Initialize locks - call this in main() or init()
+// Initialize locks
 void
 init_locks(void)
 {
@@ -617,7 +617,6 @@ init_locks(void)
     }
 }
 
-// Add lock implementation for extra credit
 int
 lock_impl(int id)
 {
